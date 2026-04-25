@@ -1,3 +1,16 @@
+// Check server health on load
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const response = await fetch('/health');
+        if (!response.ok) {
+            showError('Server is running but OCR engine is not ready. Please try again later.');
+        }
+    } catch (err) {
+        console.error('Server connection failed:', err);
+        showError('Cannot connect to server. Please make sure the server is running.');
+    }
+});
+
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('drop-zone').querySelector('input');
 const loading = document.getElementById('loading');

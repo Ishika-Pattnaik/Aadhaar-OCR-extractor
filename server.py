@@ -11,6 +11,11 @@ import numpy as np
 from datetime import datetime
 from typing import Optional
 
+# Configure environment to use disk cache efficiently
+os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'False'
+os.environ['HF_HOME'] = os.path.expanduser('~/.cache/huggingface')
+os.environ['HF_DATASETS_CACHE'] = os.path.expanduser('~/.cache/huggingface/datasets')
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -91,8 +96,12 @@ app.add_middleware(
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Get absolute path to static directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+# Mount static files with absolute path
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Initialize OCR components (lazy loading)
 ocr_components = {}
@@ -134,7 +143,7 @@ async def verify_api_key(x_api_key: str = Header(..., alias=API_KEY_HEADER)):
 @app.get("/", response_class=FileResponse)
 async def root():
     """Root endpoint serving the Frontend UI."""
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 @app.get("/api-info", response_model=dict)
 async def api_info():
@@ -144,6 +153,18 @@ async def api_info():
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health"
+    }
+
+@app.get("/debug")
+async def debug():
+    """Debug endpoint to check paths and static file configuration."""
+    return {
+        "base_dir": BASE_DIR,
+        "static_dir": STATIC_DIR,
+        "index_exists": os.path.exists(os.path.join(STATIC_DIR, "index.html")),
+        "static_files_mounted": True,
+        "css_exists": os.path.exists(os.path.join(STATIC_DIR, "style.css")),
+        "js_exists": os.path.exists(os.path.join(STATIC_DIR, "script.js"))
     }
 
 @app.get("/health", response_model=HealthResponse)

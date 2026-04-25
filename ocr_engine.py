@@ -1,3 +1,4 @@
+import os
 import logging
 try:
     from paddleocr import PaddleOCR
@@ -8,6 +9,11 @@ except ImportError:
 from config import OCR_LANG
 
 logger = logging.getLogger(__name__)
+
+# Configure PaddleOCR to use local cache only once
+# This prevents repeated downloads
+PADDLE_CACHE_DIR = os.path.expanduser("~/.cache/paddle")
+os.makedirs(PADDLE_CACHE_DIR, exist_ok=True)
 
 class OCREngine:
     def __init__(self):

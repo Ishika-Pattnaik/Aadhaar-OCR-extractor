@@ -66,4 +66,4 @@ NON_NAME_WORDS = [
 
 # Verification Thresholds
 NAME_MATCH_THRESHOLD = 80  # Fuzzy match score out of 100
-AADHAAR_CONFIDENCE_THRESHOLD = 60 # Minimum OCR confidence to consider valid candidates
+AADHAAR_CONFIDENCE_THRESHOLD = 0.6 # Minimum OCR confidence to consider valid candidates (0.0 to 1.0 scale)

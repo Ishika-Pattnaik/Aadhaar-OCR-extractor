@@ -64,3 +64,4 @@ Validates a 12-digit Aadhaar number using the Verhoeff algorithm.
 - `API_KEY`: Secret key for authentication (Default: `your-secret-api-key-change-in-production`)
 - `DEBUG_MODE`: Set to `true` for verbose logging.
 # aadhaar-ocr
+# Aadhaar-OCR-extractor

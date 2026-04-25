@@ -1,6 +1,6 @@
 import re
 import logging
-from config import AADHAAR_REGEX_PATTERNS, OCR_CORRECTIONS, NAME_ANCHORS_TOP, NON_NAME_WORDS
+from config import AADHAAR_REGEX_PATTERNS, OCR_CORRECTIONS, NAME_ANCHORS_TOP, NON_NAME_WORDS, AADHAAR_CONFIDENCE_THRESHOLD
 from validator import Validator
 
 logger = logging.getLogger(__name__)
@@ -80,11 +80,18 @@ class Extractor:
         Scans all OCR lines for a valid 12-digit Aadhaar number.
         Returns: (number_string, confidence_score)
         """
-        best_candidate = None
-        max_conf = 0.0
-        best_is_valid = False
+        if not ocr_results:
+            logger.warning("No OCR results provided")
+            return None, 0.0
 
-        # First, collect all digit sequences from OCR results
+        # DEBUG: Log ALL OCR results
+        logger.info(f"Scanning {len(ocr_results)} OCR items for Aadhaar number...")
+        logger.debug("=== ALL OCR RESULTS ===")
+        for i, item in enumerate(ocr_results):
+            text = item.get('text', '')
+            conf = item.get('conf', 0)
+            logger.debug(f"  [{i}] text='{text}' conf={conf:.2f}")
+        
         all_digits = []
         for item in ocr_results:
             text = item['text']
@@ -92,13 +99,129 @@ class Extractor:
             # Extract all digit sequences
             digit_seqs = re.findall(r'\d+', text)
             for seq in digit_seqs:
-                all_digits.append((seq, conf))
+                all_digits.append((seq, conf, text))  # Include original text for context
 
-        # Try to find 12-digit combination from collected sequences
+        logger.info(f"Found {len(all_digits)} digit sequences")
+        logger.debug("=== DIGIT SEQUENCES ===")
+        for seq, conf, orig in all_digits:
+            logger.debug(f"  digits='{seq}' from='{orig}' conf={conf:.2f}")
+
+        best_candidate = None
+        max_conf = 0.0
+        best_is_valid = False
+
+        # Strategy 0: Handle cases where one OCR line has multiple digit sequences
+        # e.g., "3492 1290" -> two sequences that should be combined
+        logger.info("Trying multi-sequence combination from same line...")
+        for item in ocr_results:
+            text = item['text']
+            conf = item['conf']
+            
+            if conf < AADHAAR_CONFIDENCE_THRESHOLD:
+                continue
+
+            cleaned = self.clean_ocr_text(text)
+            # Find all digit sequences in this line
+            digit_seqs = re.findall(r'\d+', cleaned)
+            
+            if len(digit_seqs) >= 2:
+                # Try combining all sequences from this line
+                combined = "".join(digit_seqs)
+                if len(combined) >= 12:
+                    num12 = combined[:12]
+                    is_valid = self.validator.validate_verhoeff(num12)
+                    logger.debug(f"Multi-seq from '{text}': {num12}, valid: {is_valid}")
+                    if conf > max_conf:
+                        max_conf = conf
+                        best_candidate = num12
+                        best_is_valid = is_valid
+        
+        # Strategy 0b: Combine adjacent multi-seq items with single-seq items
+        # This handles the case where "3492 1290" and "8697" are separate items
+        # and need to be combined in the right order
+        logger.info("Trying cross-item combination for multi-seq lines...")
+        
+        # Find items with 2+ digit sequences
+        multi_seq_items = []
+        for idx, item in enumerate(ocr_results):
+            text = item['text']
+            conf = item['conf']
+            if conf < AADHAAR_CONFIDENCE_THRESHOLD:
+                continue
+            cleaned = self.clean_ocr_text(text)
+            digit_seqs = re.findall(r'\d+', cleaned)
+            if len(digit_seqs) >= 2:
+                multi_seq_items.append({
+                    'index': idx,
+                    'text': text,
+                    'conf': conf,
+                    'combined': "".join(digit_seqs),
+                    'total_len': len("".join(digit_seqs))
+                })
+        
+        # Find single-seq items
+        single_seq_items = []
+        for idx, item in enumerate(ocr_results):
+            text = item['text']
+            conf = item['conf']
+            if conf < AADHAAR_CONFIDENCE_THRESHOLD:
+                continue
+            cleaned = self.clean_ocr_text(text)
+            digit_seqs = re.findall(r'\d+', cleaned)
+            if len(digit_seqs) == 1 and len(digit_seqs[0]) >= 4:
+                single_seq_items.append({
+                    'index': idx,
+                    'text': text,
+                    'conf': conf,
+                    'digits': digit_seqs[0],
+                    'len': len(digit_seqs[0])
+                })
+        
+        logger.debug(f"Multi-seq items: {len(multi_seq_items)}, Single-seq items: {len(single_seq_items)}")
+        
+        # Try combining: single item + multi-seq item (order matters!)
+        for single in single_seq_items:
+            for multi in multi_seq_items:
+                # Skip if items are the same
+                if single['index'] == multi['index']:
+                    continue
+                
+                single_digits = single['digits']
+                multi_combined = multi['combined']
+                
+                # Try: single_digits + multi_combined
+                if len(single_digits) + len(multi_combined) >= 12:
+                    combined = single_digits + multi_combined
+                    num12 = combined[:12]
+                    is_valid = self.validator.validate_verhoeff(num12)
+                    avg_conf = (single['conf'] + multi['conf']) / 2
+                    logger.debug(f"Cross-combo (single+multi): '{single['text']}' + '{multi['text']}' = {num12}, valid: {is_valid}")
+                    if avg_conf > max_conf:
+                        max_conf = avg_conf
+                        best_candidate = num12
+                        best_is_valid = is_valid
+                
+                # Try: multi_combined + single_digits
+                if len(multi_combined) + len(single_digits) >= 12:
+                    combined = multi_combined + single_digits
+                    num12 = combined[:12]
+                    is_valid = self.validator.validate_verhoeff(num12)
+                    avg_conf = (single['conf'] + multi['conf']) / 2
+                    logger.debug(f"Cross-combo (multi+single): '{multi['text']}' + '{single['text']}' = {num12}, valid: {is_valid}")
+                    if avg_conf > max_conf:
+                        max_conf = avg_conf
+                        best_candidate = num12
+                        best_is_valid = is_valid
+
         # Strategy 1: Look for direct match using Configured Patterns & Cleaning
         for item in ocr_results:
             text = item['text']
             conf = item['conf']
+            
+            # Skip low confidence results
+            if conf < AADHAAR_CONFIDENCE_THRESHOLD:
+                logger.debug(f"Skipping low confidence text: '{text}' ({conf:.2f})")
+                continue
             
             # Apply robust cleaning (fixes B->8, O->0 etc)
             cleaned_text = self.clean_ocr_text(text)
@@ -107,10 +230,12 @@ class Extractor:
             for pattern in AADHAAR_REGEX_PATTERNS:
                 matches = re.findall(pattern, cleaned_text)
                 for match in matches:
+                    logger.debug(f"Regex match: '{match}' from '{text}'")
                      # Remove spaces for validation
                     clean_num = match.replace(" ", "")
                     if len(clean_num) == 12:
                          is_valid = self.validator.validate_verhoeff(clean_num)
+                         logger.debug(f"Aadhaar candidate: {clean_num}, valid: {is_valid}, conf: {conf}")
                          if conf > max_conf:
                             max_conf = conf
                             best_candidate = clean_num
@@ -122,6 +247,7 @@ class Extractor:
             matches = re.findall(r'\b\d{12}\b', clean_digits_only)
             for match in matches:
                  is_valid = self.validator.validate_verhoeff(match)
+                 logger.debug(f"12-digit match: {match}, valid: {is_valid}")
                  # Only update if we haven't found a stronger match or if this has higher confidence
                  if conf > max_conf: 
                         max_conf = conf
@@ -129,10 +255,11 @@ class Extractor:
                         best_is_valid = is_valid
 
         # Strategy 2: Combine 4-digit + 8-digit sequences (with cleaning)
-        for i, (seq1, conf1) in enumerate(all_digits):
+        logger.info("Trying 4+8 digit combination strategy...")
+        for i, (seq1, conf1, orig1) in enumerate(all_digits):
             seq1_clean = self.clean_ocr_text(seq1) # Clean individual chunks too
             if len(seq1_clean) == 4 and seq1_clean.isdigit():
-                for j, (seq2, conf2) in enumerate(all_digits):
+                for j, (seq2, conf2, orig2) in enumerate(all_digits):
                     if i != j:
                         seq2_clean = self.clean_ocr_text(seq2)
                         if len(seq2_clean) >= 8 and seq2_clean[:8].isdigit():
@@ -141,30 +268,58 @@ class Extractor:
                             if len(combined) == 12:
                                 is_valid = self.validator.validate_verhoeff(combined)
                                 avg_conf = (conf1 + conf2) / 2
+                                logger.debug(f"4+8 combination: {combined}, valid: {is_valid}, avg_conf: {avg_conf:.2f}")
                                 if avg_conf > max_conf:
                                     max_conf = avg_conf
                                     best_candidate = combined
                                     best_is_valid = is_valid
 
         # Strategy 3: Look for 6-digit + 6-digit patterns (with cleaning)
-        for i, (seq1, conf1) in enumerate(all_digits):
+        logger.info("Trying 6+6 digit combination strategy...")
+        for i, (seq1, conf1, orig1) in enumerate(all_digits):
             seq1_clean = self.clean_ocr_text(seq1)
             if len(seq1_clean) == 6 and seq1_clean.isdigit():
-                for j, (seq2, conf2) in enumerate(all_digits):
+                for j, (seq2, conf2, orig2) in enumerate(all_digits):
                     if i != j:
                         seq2_clean = self.clean_ocr_text(seq2)
                         if len(seq2_clean) == 6 and seq2_clean.isdigit():
                             combined = seq1_clean + seq2_clean
                             is_valid = self.validator.validate_verhoeff(combined)
                             avg_conf = (conf1 + conf2) / 2
+                            logger.debug(f"6+6 combination: {combined}, valid: {is_valid}, avg_conf: {avg_conf:.2f}")
                             if avg_conf > max_conf:
                                 max_conf = avg_conf
                                 best_candidate = combined
                                 best_is_valid = is_valid
 
+        # Strategy 4: Look for any 12 consecutive digits anywhere
+        logger.info("Trying 12-digit scan strategy...")
+        for item in ocr_results:
+            text = item['text']
+            conf = item['conf']
+            
+            if conf < AADHAAR_CONFIDENCE_THRESHOLD:
+                continue
+            
+            cleaned = self.clean_ocr_text(text)
+            # Find any sequence of 12+ digits
+            matches = re.findall(r'\d{12,}', cleaned)
+            for match in matches:
+                # Take first 12 digits
+                num12 = match[:12]
+                is_valid = self.validator.validate_verhoeff(num12)
+                logger.debug(f"12+ digit scan: {num12}, valid: {is_valid}")
+                if conf > max_conf:
+                    max_conf = conf
+                    best_candidate = num12
+                    best_is_valid = is_valid
+
         if best_candidate:
             formatted = f"{best_candidate[:4]} {best_candidate[4:8]} {best_candidate[8:]}"
+            logger.info(f"Found Aadhaar: {formatted} (valid: {best_is_valid}, conf: {max_conf:.2f})")
             return formatted, max_conf
+        else:
+            logger.warning("No valid Aadhaar number found in OCR results")
         
         return None, 0.0
 
