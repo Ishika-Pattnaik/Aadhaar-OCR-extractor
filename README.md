@@ -1,13 +1,5 @@
----
-title: Aadhaar OCR API
-emoji: 🆔
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
----
+
+
 
 # Aadhaar OCR API
 
@@ -21,7 +13,7 @@ A high-performance, Privacy-First OCR API for extracting and validating Aadhaar 
   - Verhoeff algorithm check for Aadhaar numbers.
   - Fuzzy matching for Name verification.
 - **Privacy**: PII (Personally Identifiable Information) masking in logs.
-- **Deployment Ready**: Dockerized and optimized for Hugging Face Spaces.
+  
 
 ## Quick Start (Local)
 
